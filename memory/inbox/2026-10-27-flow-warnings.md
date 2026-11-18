@@ -1,5 +1,7 @@
 # Flow warnings come from one place
 
+2026-10-27 · teammate (no author recorded) · verified 2026-11-18
+
 Every place that says "this flow needs attention" uses `FlowWarnings.Build(flow, isCompleted, context)` with the context from `OnboardingFlowData.LoadWarningContext()`:
 
 - the flows list and the flow detail (`warnings` on `OnboardingFlowDto`, via `OnboardingFlowMapper`);
