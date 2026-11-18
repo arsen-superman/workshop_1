@@ -8,8 +8,7 @@ LeoHR is an internal web app for HR staff (employee records, promotions, onboard
 **Frontend:** Angular 21 (`leohr.client/`). **Backend:** ASP.NET Core Web API, .NET 10 / C# 14 (`LeoHR.Server/`).
 The user base is tiny — a single company's HR team. **Don't over-engineer:** no high-load caching, no
 premature abstraction. Simple, readable code wins. A short-lived `IMemoryCache` is fine for a frequently
-opened read-only list (e.g. the onboarding types list: running-flow count, 5 minutes) — never for a value a
-write decision depends on.
+opened read-only list or lookup (e.g. `EmployeeApiClient`) — never for a value a write decision depends on.
 
 ## Commands
 
@@ -38,8 +37,8 @@ dotnet format LeoHR.Server/LeoHR.Server.csproj --verify-no-changes --severity wa
 dotnet ef migrations add <Name> --project LeoHR.Server                               # EF is design-time via LeoHrDbContextFactory
 ```
 
-Migrations are applied automatically on startup (`db.Database.MigrateAsync()` in `Program.cs`), which also
-seeds reference data via `LeoHrSeeder`. `<TreatWarningsAsErrors>`-style analysis is on
+Migrations are applied automatically on startup (`db.Database.MigrateAsync()` in `Program.cs`).
+`<TreatWarningsAsErrors>`-style analysis is on
 (`CodeAnalysisTreatWarningsAsErrors`, `EnforceCodeStyleInBuild`) — a warning fails the build.
 
 ### Frontend (`leohr.client/`)
@@ -54,10 +53,16 @@ npm test                          # Angular @angular/build:unit-test runner (Vit
 
 A husky `pre-commit` hook runs `lint-staged` (prettier + `eslint --fix` on staged files).
 
+```bash
+dotnet test LeoHR.Server.IntegrationTests   # CI adds -p:ShouldRunNpmInstall=false
+```
+
 Backend tests live in `LeoHR.Server.IntegrationTests` (xUnit; Testcontainers Postgres, so Docker must be running, or set
 `LEOHR_TEST_CONNECTION_STRING`). There is no separate unit-test project and no mocking library: pure logic classes
-(e.g. `ArchiveOnboardingTypeHandler`) are tested there with hand-written fakes. Frontend specs follow
-`send-promotion-dialog.component.spec.ts`.
+are tested there with hand-written fakes. Frontend specs follow `send-promotion-dialog.component.spec.ts`.
+
+E2E (Playwright against the shared Test env): `cd e2e && npm install && npm test`. Needs a saved Google SSO
+session — see `e2e/README.md`.
 
 ## Big-picture architecture
 
@@ -91,12 +96,11 @@ actions add `[Authorize(Policy = nameof(Policies.Manage))]`.
 
 ### Backend — Vertical Slice Architecture
 
-One folder per feature under `Features/`, one service per feature (methods, not per-use-case handler classes — see the exception in rule 1), thin
-controllers, DTO validation via `DataAnnotations`. Slices never reference each other — see rule 3 below
-and `LeoHR.Server/README.md`.
+Rules (one service per feature, slices never reference each other, Results not exceptions, etc.) live in
+`.claude/rules/architecture.md` and load when backend files are touched; the full guide is `LeoHR.Server/README.md`.
 
-> The server README's section 11 ("throw domain-meaningful exceptions") is outdated. The codebase uses the
-> **FluentResults** Results pattern (rule 6 below): services return `Result`/`Result<T>`, controllers call
+> The README's section 11 ("throw domain-meaningful exceptions") is outdated: the codebase uses the
+> **FluentResults** Results pattern: services return `Result`/`Result<T>`, controllers call
 > `.ToActionResult()` from `Shared/Extensions/ResultExtensions.cs`.
 
 ### Frontend structure
@@ -105,8 +109,7 @@ and `LeoHR.Server/README.md`.
   `standalone: false` explicitly and are listed in the module's `declarations`). This overrides the
   "standalone always" guidance in the `angular21-best-practices` skill — do **not** convert existing components.
   **Exception:** a component meant for reuse across feature modules without importing the owning module is
-  `standalone: true` and listed in the consuming module's `imports` (e.g. `RunningFlowsDialogComponent`,
-  `app-confirm-dialog`).
+  `standalone: true` and listed in the consuming module's `imports` (e.g. `app-confirm-dialog`).
 - Feature folders under `src/app/<feature>/` with `components/`, `services/`, `models/`, and a
   `<feature>.module.ts` + `<feature>-routing.module.ts`. App-wide singletons in `src/app/core/`
   (auth, guards, strategies). Reusable UI in `src/app/shared/`.
@@ -118,7 +121,7 @@ and `LeoHR.Server/README.md`.
 - Another feature module's service is called only to read; changes go through the owning feature.
 - Styling: Tailwind v4 utilities directly in templates; colors as CSS variables in `:root` (`styles.css`);
   component styles only when unavoidable, scoped to the file that uses it. A component whose design specifies
-  its own palette may use a component `.scss` (e.g. `running-flows-dialog.component.scss`); reuse the global
+  its own palette may use a component `.scss` (e.g. `employee-activities-tab.component.scss`); reuse the global
   `.modal-*` / `.btn` classes for layout.
 
 ### Deployment (GitLab CI, `.gitlab-ci.yml`)
@@ -127,41 +130,3 @@ and `LeoHR.Server/README.md`.
 `dotnet publish` runs the Angular build itself (via the `.esproj` project reference) and emits the SPA into
 `wwwroot/`, so a single ASP.NET process serves both the SPA and `/api`, reverse-proxied by Nginx on EC2.
 CI fails the build on `dotnet format --verify-no-changes`.
-
----
-
-# LeoHR — Architecture Rules
-
-Backend follows **Vertical Slice Architecture (VSA)** with plain controllers and **one service per feature**. No MediatR, no FluentValidation (use `DataAnnotations`), no CQRS, no repository pattern. No per-use-case handler classes by default; the exception is rule 1.
-
-See `LeoHR.Server/README.md` for the full guide and rationale.
-
-## Folder layout
-
-```
-LeoHR.Server/
-  Features/<FeatureName>/        ← one folder per business feature
-    <FeatureName>Controller.cs    ← thin controller, one action per use case
-    I<FeatureName>Service.cs      ← service interface
-    <FeatureName>Service.cs       ← service impl, many methods
-    Dto/                          ← feature-specific DTOs
-  Shared/                         ← everything cross-feature: shared services (DbContexts, auth, email, toggles) AND passive types (DTOs, enums, constants)
-  Models/Entities/                ← EF Core entities (shared across slices)
-  Program.cs
-```
-
-## Rules
-
-1. **One feature = one folder** under `Features/`: controller, `I<Feature>Service`, `<Feature>Service`, `Dto/`. A new use case is a new method on that service, not a new class. **Exception:** a business rule that must be tested on its own and is shared by several service methods may be a small scoped class in the same feature folder (e.g. `ArchiveOnboardingTypeHandler`, called from every path that archives a type).
-2. **Thin controllers:** one action = one service call, no business logic. Validate DTOs with `DataAnnotations`.
-3. **Slices never reference each other** — not directly, and not through a `Shared/` interface resolved to another slice's main service.
-   - Read another slice's tables straight from `LeoHrDbContext` (`.AsNoTracking()` unless attached to an entity you save).
-   - Write only your own entities. A write to another slice goes through a `Shared/` interface on a dedicated `<Purpose>Service` in the owning slice (e.g. `IPromotionActivities` → `PromotionActivitiesService`); wrap both saves in a transaction when they must land together.
-   - **Exception — derived state:** when another slice already owns a rule (e.g. "flow is finished" in `OnboardingFlowMapper.IsCompleted`), call that slice's service interface instead of re-implementing the rule. Read-only, one direction only (`OnboardingTypes` → `IOnboardingFlowsService`); never write through it, and never create a cycle.
-   - Fix a violation in the MR that meets it.
-4. **`Shared/`** holds cross-cutting infra (DbContexts, email, auth, Employee API) and types used by 2+ slices. Entities live in `Models/Entities/`.
-5. **Register in `Program.cs`** as `AddScoped<IXxx, XxxService>()`. Never forward a `Shared/` interface with `GetRequiredService<…Service>()`.
-6. **Results, not exceptions:** services return `Result`/`Result<T>`; controllers call `.ToActionResult()`.
-7. **Audited entities inherit `BaseAuditableEntity`**; never set its fields by hand.
-8. **Comments:** one line for a non-obvious *why*. Never describe UI behaviour.
-9. **HR-editable seed data** goes in raw SQL in a migration's `Up()`, not `HasData` (a later seed change overwrites HR's edits). `HasData` is only for read-only lists.
